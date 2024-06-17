@@ -6,7 +6,7 @@
 struct ContentView: View {
     var body: some View {
         ScrollView {
-	    			// PreviewData.developer2  is samle html text
+	    // PreviewData.developer2 is sample html text
             HtmlTextView(PreviewData.developer2).padding()
         }
     }
