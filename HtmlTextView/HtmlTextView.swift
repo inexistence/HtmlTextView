@@ -10,7 +10,18 @@ import SwiftUI
 import SwiftSoup
 import Shimmer
 
-typealias Style = Font
+struct Style {
+    var font: Font? = nil
+    var italic: Bool = false
+    var bold: Bool = false
+    
+    static func + (_ l: Style, _ r: Style) -> Style {
+        let font = l.font ?? r.font
+        let italic = l.italic || r.italic
+        let bold = l.bold || r.bold
+        return Style(font: font, italic: italic, bold: bold)
+    }
+}
 
 indirect enum ViewRender {
     static let VERTICLE = 0
@@ -20,7 +31,7 @@ indirect enum ViewRender {
     case root(children: [ViewRender])
     case text(contents: [TextContents])
     case container(orientation: Int, children: [ViewRender])
-    case img(src: String)
+    case img(src: String, width: CGFloat?, height: CGFloat?)
     case li(children: [ViewRender])
     case empty
     
@@ -72,40 +83,58 @@ struct NodeView: View {
                 } else {
                     text = Text(content)
                 }
-                if let font = $0.style {
-                    text = text.font(font)
+                if let style = $0.style {
+                    text = text.font(style.font)
+                    
+                    if style.italic == true {
+                        text = text.italic()
+                    }
+                    
+                    if style.bold == true {
+                        text = text.bold()
+                    }
                 }
                 return text
             }).reduce(Text(""), +).padding(.vertical, 2.5)
-        case .img(src: let src):
+        case .img(src: let src, width: let width, height: let height):
             AsyncImage(url: URL(string: src)) { phase in
                 if let returnImage = phase.image {
-                    returnImage.resizable()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                        .cornerRadius(5.0, antialiased: true)
-                        .aspectRatio(contentMode: .fit)
-                        .padding()
-                        .shadow(radius: 5)
+                    if width == nil && height == nil {
+                        // 省一层 ZStack，效果一样
+                        returnImage.resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: width, height: height)
+                            .cornerRadius(5.0, antialiased: true)
+                            .shadow(radius: 5)
+                    } else {
+                        ZStack(alignment:.center) {
+                            returnImage.resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: width, height: height)
+                                .cornerRadius(5.0, antialiased: true)
+                                .shadow(radius: 5)
+                        }.frame(maxWidth: .infinity)
+                    }
                 } else {
-                    ZStack {
+                    ZStack(alignment:.center) {
                         Text("Image").foregroundStyle(.secondary.opacity(0.3))
                         Rectangle()
-                            .frame(width: 50, height: 50, alignment: .center)
+                            .frame(width: width ?? 50, height: height ?? 50)
                             .foregroundColor(.primary)
-                            .shimmering(gradient: Gradient(colors: [.secondary.opacity(0.3), .secondary, .secondary.opacity(0.3)]), bandSize: 25)
+                            .shimmering(gradient: Gradient(colors: [.secondary.opacity(0.3), .secondary, .secondary.opacity(0.3)]), bandSize: (width ?? height ?? 50) / 2)
                         
-                    }
+                    }.frame(maxWidth: .infinity)
                 }
             }
         case .container(orientation: let ori, children: let children):
             if ori == ViewRender.VERTICLE {
-                LazyVStack(alignment: .leading) {
+                VStack(alignment: .leading) {
                     ForEach(0..<children.count, id: \.self) { index in
                         NodeView(children[index])
                     }
                 }.padding(0)
             } else if ori == ViewRender.HORIZONTAL {
-                LazyHStack {
+                HStack {
                     ForEach(0..<children.count, id: \.self) { index in
                         NodeView(children[index])
                     }
@@ -123,7 +152,7 @@ struct NodeView: View {
                         NodeView(children[index])
                     }
                 } else {
-                    VStack {
+                    VStack(alignment: .leading) {
                         ForEach(0..<children.count, id: \.self) { index in
                             NodeView(children[index])
                         }
@@ -159,9 +188,16 @@ class Node {
         self.attributes = attributes
     }
     
-    func toViewRender(style: Style? = nil) -> [ViewRender] {
+    func toViewRender(style parentStyle: Style? = nil) -> [ViewRender] {
         // TODO combine styles, maybe we can use array to store?
-        let style = style ?? toStyle()
+        var style: Style? = toStyle()
+        
+        if let parentStyle = parentStyle, let s = style {
+            style = parentStyle + s
+        } else {
+            style = style ?? parentStyle
+        }
+        
         var viewRender: [ViewRender]
         
         let childViews = Node.renderChildren(children: children, style: style)
@@ -238,7 +274,20 @@ class ContentNode: Node {
 
 class ImageNode: Node {
     override func toViewRender(style: Style? = nil) -> [ViewRender] {
-        return [.img(src: attributes["src"] ?? "")]
+        if let src = attributes["src"] {
+            return [.img(src: src, width: parseAttributesCGFloat(key: "width"), height: parseAttributesCGFloat(key: "height"))]
+        } else {
+            return super.toViewRender(style: style)
+        }
+    }
+    
+    private func parseAttributesCGFloat(key: String) -> CGFloat? {
+        if let str = attributes[key] {
+            if let d = Double(str) {
+                return CGFloat(d)
+            }
+        }
+        return nil
     }
 }
 
@@ -265,14 +314,9 @@ class MyXMLParserDelegate: NSObject, XMLParserDelegate {
     private var curNode: Node? = nil
     var root: RootNode? = nil
     
-    let textStyleElements = ["h1", "h2", "h3", "h4", "a", "strong", "em"]
+    let textStyleElements = ["h1", "h2", "h3", "h4", "a", "strong", "em", "small", "span", "b", "br"]
     
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
-        // fix not closed tag
-        if curNode?.tag == elementName {
-            NSLog("自动关闭\(elementName)")
-            endNode()
-        }
         
         NSLog("开始解析元素: \(elementName)(\(attributeDict) \(qName ?? "") \(namespaceURI ?? ""))")
         if root == nil {
@@ -296,21 +340,30 @@ class MyXMLParserDelegate: NSObject, XMLParserDelegate {
             let textStyle  = TextStyleNode(tag: elementName, attributes: attributeDict)
             
             if (elementName == "h1") {
-                textStyle.font = .largeTitle
+                textStyle.font = Style(font: .largeTitle)
                 textStyle.newline = true
             } else if elementName == "h2" {
-                textStyle.font = .title
+                textStyle.font = Style(font: .title)
                 textStyle.newline = true
             } else if elementName == "h3" {
-                textStyle.font = .title2
+                textStyle.font = Style(font: .title2)
                 textStyle.newline = true
             } else if elementName == "h4" {
-                textStyle.font = .title2
+                textStyle.font = Style(font: .title3)
                 textStyle.newline = true
             } else if elementName == "p" {
                 textStyle.newline = true
+            } else if elementName == "b" {
+                textStyle.font = Style(italic: true)
+            } else if elementName == "strong" {
+                textStyle.font = Style(bold: true)
+            } else if elementName == "small" {
+                textStyle.font = Style(font: .caption)
+            } else if elementName == "br" {
+                // 至少有个换行内容，因为很多人喜欢直接 `<br/>` 来换行
+                textStyle.children.append(ContentNode(content: "", attributes: attributeDict))
+                textStyle.newline = true
             }
-            
             node = textStyle
         } else if (elementName == "iframe") {
             node = IFrameNode(tag: elementName, attributes: attributeDict)
