@@ -10,7 +10,7 @@ import SwiftUI
 struct ContentView: View {
     var body: some View {
         ScrollView {
-            HtmlTextView(PreviewData.develop3).padding()
+            HtmlTextView(PreviewData.delevoper3).padding()
         }
     }
 }

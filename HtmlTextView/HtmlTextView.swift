@@ -24,15 +24,14 @@ struct Style {
 }
 
 indirect enum ViewRender {
-    static let VERTICLE = 0
-    static let HORIZONTAL = 1
-    static let NONE = -1
-    
     case root(children: [ViewRender])
     case text(contents: [TextContents])
-    case container(orientation: Int, children: [ViewRender])
+    case vstack(children: [ViewRender])
+    case hstack(children: [ViewRender])
+    case zstack(children: [ViewRender])
     case img(src: String, width: CGFloat?, height: CGFloat?)
     case li(children: [ViewRender])
+    case center(children: [ViewRender])
     case empty
     
     static func + (_ a: ViewRender, _ b: ViewRender) -> ViewRender? {
@@ -126,20 +125,26 @@ struct NodeView: View {
                     }.frame(maxWidth: .infinity)
                 }
             }
-        case .container(orientation: let ori, children: let children):
-            if ori == ViewRender.VERTICLE {
-                VStack(alignment: .leading) {
-                    ForEach(0..<children.count, id: \.self) { index in
-                        NodeView(children[index])
-                    }
-                }.padding(0)
-            } else if ori == ViewRender.HORIZONTAL {
-                HStack {
-                    ForEach(0..<children.count, id: \.self) { index in
-                        NodeView(children[index])
-                    }
+        case .center(children: let children):
+            ZStack(alignment: .center) {
+                ForEach(0..<children.count, id: \.self) { index in
+                    NodeView(children[index])
                 }
-            } else {
+            }.frame(maxWidth: /*@START_MENU_TOKEN@*/.infinity/*@END_MENU_TOKEN@*/, alignment: .center)
+        case .vstack(children: let children):
+            VStack(alignment: .leading) {
+                ForEach(0..<children.count, id: \.self) { index in
+                    NodeView(children[index])
+                }
+            }
+        case .hstack(children: let children):
+            HStack {
+                ForEach(0..<children.count, id: \.self) { index in
+                    NodeView(children[index])
+                }
+            }
+        case .zstack(children: let children):
+            ZStack {
                 ForEach(0..<children.count, id: \.self) { index in
                     NodeView(children[index])
                 }
@@ -209,9 +214,9 @@ class Node {
                 NSLog("empty children \(tag)")
                 viewRender = []
             } else if childViews.count == 1 {
-                viewRender = [.container(orientation: ViewRender.NONE, children: childViews)]
+                viewRender = [.zstack(children: childViews)]
             } else {
-                viewRender = [.container(orientation: ViewRender.VERTICLE, children: childViews)]
+                viewRender = [.vstack(children: childViews)]
             }
         }
 
@@ -272,6 +277,21 @@ class ContentNode: Node {
     }
 }
 
+class CenterNode: Node {
+    override func toViewRender(style parentStyle: Style? = nil) -> [ViewRender] {
+        var style: Style? = toStyle()
+        
+        if let parentStyle = parentStyle, let s = style {
+            style = parentStyle + s
+        } else {
+            style = style ?? parentStyle
+        }
+        
+        let childViews = Node.renderChildren(children: children, style: style)
+        return [.center(children: childViews)]
+    }
+}
+
 class ImageNode: Node {
     override func toViewRender(style: Style? = nil) -> [ViewRender] {
         if let src = attributes["src"] {
@@ -294,7 +314,7 @@ class ImageNode: Node {
 class IFrameNode: Node {
     override func toViewRender(style: Style? = nil) -> [ViewRender] {
         // TODO
-        return [.container(orientation: ViewRender.VERTICLE, children: [.text(contents: [TextContents(content: "This is a frame to be implemented", style: nil, link: nil)])])]
+        return [.hstack(children: [.text(contents: [TextContents(content: "This is a frame to be implemented", style: nil, link: nil)])])]
     }
 }
 
@@ -326,7 +346,12 @@ class MyXMLParserDelegate: NSObject, XMLParserDelegate {
         }
         
         let node: Node
-        if elementName == "root" {
+        
+        let divStyle = parseDivStyle(style: attributeDict["style"])
+        
+        if divStyle?["display"]?.contains("none") == true {
+            node = EmptyNode(tag: elementName, attributes: attributeDict)
+        } else if elementName == "root" {
             node = root ?? RootNode(tag: "root", attributes: [:])
         } else if elementName == "img" {
             NSLog("new img, curNode=img")
@@ -371,6 +396,8 @@ class MyXMLParserDelegate: NSObject, XMLParserDelegate {
             node = LiNode(tag: elementName, attributes: attributeDict)
         } else if (elementName == "meta") {
             node = EmptyNode(tag: elementName, attributes: attributeDict)
+        } else if (elementName == "center") {
+            node = CenterNode(tag: elementName, attributes: attributeDict)
         } else {
             NSLog("new others, curNode=others")
             node = Node(tag: elementName, attributes: attributeDict)
@@ -381,6 +408,20 @@ class MyXMLParserDelegate: NSObject, XMLParserDelegate {
             cur.children.append(node)
         }
         curNode = node
+    }
+    
+    func parseDivStyle(style: String?) -> [String: String]? {
+        guard let style = style else { return nil }
+        
+        var dic: [String: String] = [:]
+        let entries = style.split(separator: ";")
+        for entry in entries {
+            let kv = entry.split(separator: ":")
+            if kv.count == 2, let key = kv.first, let value = kv.last {
+                dic.updateValue(String(value), forKey: String(key))
+            }
+        }
+        return dic
     }
  
  
@@ -406,6 +447,28 @@ class MyXMLParserDelegate: NSObject, XMLParserDelegate {
         NSLog("文档解析完成")
     }
     
+    func parser(_ parser: XMLParser, parseErrorOccurred parseError: any Error) {
+        NSLog("parse parseError \(parseError)")
+    }
+
+    
+    func parser(_ parser: XMLParser, validationErrorOccurred validationError: any Error) {
+        NSLog("parse validationError \(validationError)")
+    }
+    
+}
+
+extension String {
+    func matchReplace(pattern: String, replacing: String) -> String {
+        let validate = self
+        do {
+                let regex = try NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+                let modified = regex.stringByReplacingMatches(in: validate, options: .reportProgress, range: NSMakeRange(0, validate.count), withTemplate: replacing)
+                return modified
+            } catch {
+                return validate
+            }
+    }
 }
 
 struct HtmlTextView: View {
@@ -414,6 +477,8 @@ struct HtmlTextView: View {
     var content: String
     
     init(_ content: String) {
+        // 如果attr里有key的value为空会导致解析失败，所以这里用正则把他们删了
+        let content = content.matchReplace(pattern: " \\w+=\"\"", replacing: "")
         let html = "<root>\(content)</root>"
         if let body = try?  SwiftSoup.parseBodyFragment(html) {
             body.outputSettings().escapeMode(.xhtml)
@@ -442,6 +507,7 @@ struct HtmlTextView: View {
         renderedTag
     }
 }
+
 
 #Preview {
     ScrollView {
